@@ -1,0 +1,232 @@
+service:
+  name: ebookee
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-2'}
+
+  tracing:
+    lambda: true
+    apiGateway: true
+ 
+
+  #DONE : configure env variables.
+  environment:
+    EBOOKS_TABLE: ebookee-db-${self:provider.stage}
+    USER_ID_INDEX: UserIdIndex
+    CONNECTIONS_TABLE: Connections-${self:provider.stage}
+    EBOOKS_S3_BUCKET: ebookee-bucket-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+
+functions:
+
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  # DONE: Configure this function
+  GetEbooks:
+    handler: src/lambda/http/getEbooks.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}/index/${self:provider.environment.USER_ID_INDEX}
+    events:
+      - http:
+          method: get
+          path: ebooks
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Get all ebooks for a logged user.
+            description: Get all ebooks for a logged user.
+
+  # DONE: Configure this function
+  AddEbook:
+    handler: src/lambda/http/addEbook.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+    events:
+      - http:
+          method: post
+          path: ebooks
+          request:
+            schema:
+              application/json: ${file(src/models/add-ebook-request.json)}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Add a new ebook
+            description: Add a new ebook
+            requestModels:
+              'application/json': AddEbookRequest
+
+  # DONE: Configure this function
+  UpdateEbook:
+    handler: src/lambda/http/updateEbook.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+    events:
+      - http:
+          method: patch
+          path: ebooks/{ebookId}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Update an ebook
+            description: Update an ebook.
+            requestModels:
+              'application/json': UpdateEbookRequest
+
+
+  # DONE: Configure this function
+  DeleteEbook:
+    handler: src/lambda/http/deleteEbook.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+    events:
+      - http:
+          method: delete
+          path: ebooks/{ebookId}
+          cors: true
+          authorizer: Auth
+
+  # DONE: Configure this function
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject
+          - s3:DeleteObject
+        Resource: arn:aws:s3:::${self:provider.environment.EBOOKS_S3_BUCKET}/*
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EBOOKS_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+    events:
+      - http:
+          method: post
+          path: ebooks/{ebookId}/attachment
+          cors: true
+          documentation:
+            summary: get S3 upload URL
+            description: get S3 upload URL
+
+
+resources:
+  Resources:
+    # TODO: Add any necessary AWS resources
+      ImagesDynamoDBTable:
+        Type: "AWS::DynamoDB::Table"
+        Properties:
+          AttributeDefinitions:
+            - AttributeName: userId
+              AttributeType: S
+            - AttributeName: ebookId
+              AttributeType: S
+          KeySchema:
+            - AttributeName: ebookId
+              KeyType: HASH
+          BillingMode: PAY_PER_REQUEST
+          StreamSpecification:
+            StreamViewType: NEW_IMAGE
+          TableName: ${self:provider.environment.EBOOKS_TABLE}
+          GlobalSecondaryIndexes:
+            - IndexName: ${self:provider.environment.USER_ID_INDEX}
+              KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              Projection:
+                ProjectionType: ALL
+
+      # Configure S3 bucket
+      AttachmentsBucket:
+        Type: AWS::S3::Bucket
+        Properties:
+          BucketName: ${self:provider.environment.EBOOKS_S3_BUCKET}
+          CorsConfiguration:
+            CorsRules:
+              -
+                AllowedOrigins:
+                  - '*'
+                AllowedHeaders:
+                  - '*'
+                AllowedMethods:
+                  - GET
+                  - PUT
+                  - POST
+                  - DELETE
+                  - HEAD
+                MaxAge: 3000
+
+      BucketPolicy:
+        Type: AWS::S3::BucketPolicy
+        Properties:
+          PolicyDocument:
+            Id: MyPolicy
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PublicReadForGetBucketObjects
+                Effect: Allow
+                Principal: '*'
+                Action: 's3:GetObject'
+                Resource: 'arn:aws:s3:::${self:provider.environment.EBOOKS_S3_BUCKET}/*'
+          Bucket: !Ref AttachmentsBucket
+
